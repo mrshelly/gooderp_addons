@@ -36,10 +36,15 @@ class buy_order_track_wizard(models.TransientModel):
             domain.append(('order_id.partner_id', '=', self.partner_id.id))
 
         index = 0
-        total_qty = total_amount = total_not_in = 0
+        sum_qty = sum_amount = sum_not_in = 0  # 数量、金额、未入库数量合计
+        total_qty = total_amount = total_not_in = 0 # 数量、金额、未入库数量小计
         line_ids = []
         for line in self.env['buy.order.line'].search(domain, order='goods_id'):
             line_ids.append(line)
+            sum_qty += line.quantity
+            sum_amount += line.subtotal
+            sum_not_in += line.quantity - line.quantity_in
+
         for line in self.env['buy.order.line'].search(domain, order='goods_id'):
             index += 1
             after_id = line_ids[index:] and line_ids[index:][0]  # 下一个明细行
@@ -71,6 +76,9 @@ class buy_order_track_wizard(models.TransientModel):
             res.append(track.id)
             
             if not after_id:  # 如果是最后一个明细行，则在最后增加一个小计行
+                total_qty += line.quantity
+                total_not_in += line.quantity - line.quantity_in
+                total_amount += line.subtotal
                 summary_last_track = self.env['buy.order.track'].create({
                     'goods_state': u'小计',
                     'qty': total_qty,
@@ -97,9 +105,16 @@ class buy_order_track_wizard(models.TransientModel):
                 res.append(summary_track.id)
                 total_qty = total_amount = total_not_in = 0  # 计算不同的商品时先将初始值清零
 
+        sum_track = self.env['buy.order.track'].create({
+                    'goods_state': u'合计',
+                    'qty': sum_qty,
+                    'amount': sum_amount,
+                    'qty_not_in': sum_not_in,
+                })
+        res.append(sum_track.id)
         view = self.env.ref('buy.buy_order_track_tree')
         return {
-            'name': u'采购订单跟踪表:',
+            'name': u'采购订单跟踪表',
             'view_type': 'form',
             'view_mode': 'tree',
             'view_id': False,

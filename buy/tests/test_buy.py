@@ -145,7 +145,7 @@ class test_buy_order_line(TransactionCase):
             self.assertTrue(line.subtotal == 117)
 
     def test_onchange_goods_id(self):
-        '''当订单行的产品变化时，带出产品上的单位和默认仓库'''
+        '''当订单行的产品变化时，带出产品上的单位、默认仓库、成本'''
         goods = self.env.ref('goods.cable')
         goods.default_wh = self.env.ref('warehouse.hd_stock').id
         for line in self.order.line_ids:
@@ -154,6 +154,13 @@ class test_buy_order_line(TransactionCase):
             self.assertTrue(line.uom_id.name == u'件')
             wh_id = line.warehouse_dest_id.id
             self.assertTrue(wh_id == goods.default_wh.id)
+
+            # 测试价格是否是商品的成本
+            self.assertTrue(line.price == goods.cost)
+            # 测试不设置商品的成本时是否弹出警告
+            goods.cost = 0.0
+            with self.assertRaises(except_orm):
+                line.onchange_goods_id()
 
     def test_onchange_discount_rate(self):
         ''' 订单行优惠率改变时，改变优惠金额'''
@@ -185,6 +192,7 @@ class test_buy_receipt(TransactionCase):
         '''测试返回付款状态'''
         self.receipt._get_buy_money_state()
         self.receipt.buy_receipt_done()
+        self.return_receipt._get_buy_return_state()
         self.assertTrue(self.receipt.money_state == u'未付款')
         self.receipt._get_buy_money_state()
         self.receipt.payment = self.receipt.amount - 1
@@ -198,6 +206,7 @@ class test_buy_receipt(TransactionCase):
         '''测试返回退款状态'''
         self.return_receipt._get_buy_return_state()
         self.return_receipt.buy_receipt_done()
+        self.return_receipt._get_buy_return_state()
         self.assertTrue(self.return_receipt.return_state == u'未退款')
         self.return_receipt._get_buy_money_state()
         self.return_receipt.payment = self.return_receipt.amount - 1
@@ -228,10 +237,24 @@ class test_buy_receipt(TransactionCase):
         self.assertTrue(receipt.origin == 'buy.receipt.return')
 
     def test_unlink(self):
-        '''测试删除已审核的采购入库/退货单'''
+        '''测试删除采购入库/退货单'''
+        # 测试是否可以删除已审核的单据
         self.receipt.buy_receipt_done()
         with self.assertRaises(except_orm):
             self.receipt.unlink()
+
+        # 反审核购货订单，测试删除buy_receipt时是否可以删除关联的wh.move.line记录
+        order = self.order.copy()
+        order.buy_order_done()
+
+        receipt = self.env['buy.receipt'].search(
+                       [('order_id', '=', order.id)])
+        move_id = receipt.buy_move_id.id
+        order.buy_order_draft()
+        move = self.env['wh.move'].search(
+               [('id', '=', move_id)])
+        self.assertTrue(not move)
+        self.assertTrue(not move.line_in_ids)
 
     def test_buy_receipt_done(self):
         '''测试审核采购入库单/退货单，更新本单的付款状态/退款状态，并生成源单和付款单'''
@@ -254,8 +277,8 @@ class test_buy_receipt(TransactionCase):
         with self.assertRaises(except_orm):
             self.receipt.buy_receipt_done()
         # 重复审核报错
-        self.receipt.bank_account_id = bank_account
-        self.receipt.payment = 100
+        self.receipt.bank_account_id = None
+        self.receipt.payment = 0
         self.receipt.buy_receipt_done()
         with self.assertRaises(except_orm):
             self.receipt.buy_receipt_done()
@@ -267,6 +290,12 @@ class test_buy_receipt(TransactionCase):
                           'buy_id': receipt.id,
                           'partner_id': 4,
                           'amount': 100, })
+        # 测试分摊之前审核是否会弹出警告
+        with self.assertRaises(except_orm):
+            receipt.buy_receipt_done()
+        # 测试分摊之后金额是否相等，然后审核，测试采购费用是否产生源单
+        receipt.buy_share_cost()
         receipt.buy_receipt_done()
         for line in receipt.line_in_ids:
             self.assertTrue(line.share_cost == 100)
+            self.assertTrue(line.using_attribute)

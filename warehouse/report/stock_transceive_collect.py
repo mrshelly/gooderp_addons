@@ -17,7 +17,7 @@ class report_stock_transceive_collect(models.Model):
         'wh.out.losses': 'losses_out',
         'wh.in.overage': 'overage_in',
 
-        'buy.receipt.sell': u'purchase_in',
+        'buy.receipt.buy': u'purchase_in',
         'buy.receipt.return': u'purchase_out',
         'sell.delivery.sell': u'sale_out',
         'sell.delivery.return': u'sale_in',
@@ -87,7 +87,7 @@ class report_stock_transceive_collect(models.Model):
                     result[origin + '_cost'] = 0
 
                 result[origin + '_qty'] += line.goods_qty
-                result[origin + '_cost'] += line.subtotal
+                result[origin + '_cost'] += line.cost
 
     def select_sql(self, sql_type='out'):
         select = super(report_stock_transceive_collect, self).select_sql(sql_type=sql_type)

@@ -69,10 +69,10 @@ class buy_order(models.Model):
                         default=lambda self: fields.Date.context_today(self),
                         select=True, copy=False, help=u"订单的要求交货日期")
     name = fields.Char(u'单据编号', select=True, copy=False,
-                       default='/', 
+                       default='/',
                        help=u"购货订单的唯一编号，当创建时它会自动生成下一个编号。")
     type = fields.Selection([('buy', u'购货'), ('return', u'退货')], u'类型',
-                             default='buy', states=READONLY_STATES)
+                            default='buy', states=READONLY_STATES)
     line_ids = fields.One2many('buy.order.line', 'order_id', u'购货订单行',
                                states=READONLY_STATES, copy=True)
     note = fields.Text(u'备注')
@@ -91,11 +91,11 @@ class buy_order(models.Model):
     cancelled = fields.Boolean(u'已终止')
 
     @api.one
-    @api.onchange('discount_rate')
+    @api.onchange('discount_rate', 'line_ids')
     def onchange_discount_rate(self):
+        '''当优惠率或购货订单行发生变化时，单据优惠金额发生变化'''
         total = sum(line.subtotal for line in self.line_ids)
-        if self.discount_rate:
-            self.discount_amount = total * self.discount_rate * 0.01
+        self.discount_amount = total * self.discount_rate * 0.01
 
     @api.model
     def create(self, vals):
@@ -146,8 +146,8 @@ class buy_order(models.Model):
         discount_amount = 0
         if single:
             qty = 1
-            discount_amount = (line.discount_amount 
-                               / (line.quantity - line.quantity_in))
+            discount_amount = (line.discount_amount /
+                               (line.quantity - line.quantity_in))
         else:
             qty = line.quantity - line.quantity_in
             discount_amount = line.discount_amount
@@ -166,6 +166,7 @@ class buy_order(models.Model):
                     'warehouse_id': warehouse_id,
                     'warehouse_dest_id': warehouse_dest_id,
                     'goods_qty': qty,
+                    'cost_unit': line.price,
                     'price': line.price,
                     'discount_rate': line.discount_rate,
                     'discount_amount': discount_amount,
@@ -259,7 +260,7 @@ class buy_order_line(models.Model):
         self.subtotal = amount + tax_amt
 
     order_id = fields.Many2one('buy.order', u'订单编号', select=True,
-                                required=True, ondelete='cascade')
+                               required=True, ondelete='cascade')
     goods_id = fields.Many2one('goods', u'商品')
     attribute_id = fields.Many2one('attribute', u'属性',
                                    domain="[('goods_id', '=', goods_id)]")
@@ -274,12 +275,12 @@ class buy_order_line(models.Model):
                                store=True, readonly=True)
     discount_rate = fields.Float(u'折扣率%')
     discount_amount = fields.Float(u'折扣额')
-    amount = fields.Float(u'金额', compute=_compute_all_amount, 
+    amount = fields.Float(u'金额', compute=_compute_all_amount,
                           store=True, readonly=True)
     tax_rate = fields.Float(u'税率(%)', default=17.0)
-    tax_amount = fields.Float(u'税额', compute=_compute_all_amount, 
+    tax_amount = fields.Float(u'税额', compute=_compute_all_amount,
                               store=True, readonly=True)
-    subtotal = fields.Float(u'价税合计', compute=_compute_all_amount, 
+    subtotal = fields.Float(u'价税合计', compute=_compute_all_amount,
                             store=True, readonly=True)
     note = fields.Char(u'备注')
     # TODO:放到单独模块中 sell_to_buy many2one 到sell.order
@@ -288,17 +289,20 @@ class buy_order_line(models.Model):
     @api.one
     @api.onchange('goods_id')
     def onchange_goods_id(self):
-        '''当订单行的产品变化时，带出产品上的单位和默认仓库'''
+        '''当订单行的产品变化时，带出产品上的单位、默认仓库、成本价'''
         if self.goods_id:
             self.uom_id = self.goods_id.uom_id
             self.warehouse_dest_id = self.goods_id.default_wh  # 取产品的默认仓库
+            if not self.goods_id.cost:
+                raise except_orm(u'错误', u'请先设置商品的成本！')
+            self.price = self.goods_id.cost
 
     @api.one
-    @api.onchange('discount_rate')
+    @api.onchange('quantity', 'price', 'discount_rate')
     def onchange_discount_rate(self):
-        if self.discount_rate:
-            self.discount_amount = (self.quantity * self.price 
-                                    * self.discount_rate * 0.01)
+        '''当数量、单价或优惠率发生变化时，优惠金额发生变化'''
+        self.discount_amount = (self.quantity * self.price *
+                                self.discount_rate * 0.01)
 
 
 class buy_receipt(models.Model):
@@ -356,7 +360,7 @@ class buy_receipt(models.Model):
     buy_move_id = fields.Many2one('wh.move', u'入库单',
                                   required=True, ondelete='cascade')
     is_return = fields.Boolean(
-                    u'是否退货', 
+                    u'是否退货',
                     default=lambda self: self.env.context.get('is_return'))
     order_id = fields.Many2one('buy.order', u'源单号', copy=False)
     invoice_id = fields.Many2one('money.invoice', u'发票号', copy=False)
@@ -376,8 +380,9 @@ class buy_receipt(models.Model):
                                help=u"采购退货单的退款状态", select=True, copy=False)
 
     @api.one
-    @api.onchange('discount_rate')
+    @api.onchange('discount_rate', 'line_in_ids', 'line_out_ids')
     def onchange_discount_rate(self):
+        '''当优惠率或订单行发生变化时，单据优惠金额发生变化'''
         total = 0
         if self.line_in_ids:
             # 入库时优惠前总金额
@@ -389,8 +394,8 @@ class buy_receipt(models.Model):
             self.discount_amount = total * self.discount_rate * 0.01
 
     def get_move_origin(self, vals):
-        return self._name + (self.env.context.get('is_return') 
-                             and '.return' or '.buy')
+        return self._name + (self.env.context.get('is_return') and
+                             '.return' or '.buy')
 
     @api.model
     def create(self, vals):
@@ -412,6 +417,9 @@ class buy_receipt(models.Model):
         for receipt in self:
             if receipt.state == 'done':
                 raise except_orm(u'错误', u'不能删除已审核的单据')
+            move = self.env['wh.move'].search([('id', '=', receipt.buy_move_id.id)])
+            if move:
+                move.unlink()
 
         return super(buy_receipt, self).unlink()
 
@@ -427,9 +435,9 @@ class buy_receipt(models.Model):
         if self.payment > self.amount:
             raise except_orm(u'警告！', u'本次付款金额不能大于折后金额！')
 
-        if sum(cost_line.amount for cost_line in self.cost_line_ids) > 0:
-            if sum(line.share_cost for line in self.line_in_ids) == 0:
-                self.buy_share_cost()
+        if (sum(cost_line.amount for cost_line in self.cost_line_ids) !=
+                sum(line.share_cost for line in self.line_in_ids)):
+            raise except_orm(u'警告！', u'采购费用还未分摊或分摊不正确！')
 
         if self.order_id:
             if not self.is_return:
@@ -497,10 +505,10 @@ class buy_receipt(models.Model):
             money_order = rec.env['money.order'].create({
                                 'partner_id': self.partner_id.id,
                                 'date': fields.Date.context_today(self),
-                                'line_ids': 
-                                  [(0, 0, line) for line in money_lines],
-                                'source_ids': 
-                                  [(0, 0, line) for line in source_lines],
+                                'line_ids':
+                                [(0, 0, line) for line in money_lines],
+                                'source_ids':
+                                [(0, 0, line) for line in source_lines],
                                 'type': 'pay',
                                 'amount': amount,
                                 'reconciled': this_reconcile,
@@ -522,7 +530,7 @@ class buy_receipt(models.Model):
             total_amount += line.amount
         for line in self.line_in_ids:
             cost = sum(cost_line.amount for cost_line in self.cost_line_ids)
-            line.share_cost =  cost / total_amount * line.amount
+            line.share_cost = cost / total_amount * line.amount
         return True
 
 
